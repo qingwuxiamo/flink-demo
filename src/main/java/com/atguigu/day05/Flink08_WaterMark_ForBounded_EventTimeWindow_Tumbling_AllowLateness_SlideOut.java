@@ -6,12 +6,14 @@ import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
+import org.apache.flink.streaming.api.datastream.WindowedStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.util.Collector;
+import org.apache.flink.util.OutputTag;
 
 import java.time.Duration;
 
@@ -20,7 +22,7 @@ import java.time.Duration;
  * @version 1.0
  * @date 2021/9/11 11:13
  */
-public class Flink07_WaterMark_ForBounded_EventTimeWindow_Tumbling_AllowLateness {
+public class Flink08_WaterMark_ForBounded_EventTimeWindow_Tumbling_AllowLateness_SlideOut {
 
     public static void main(String[] args) throws Exception {
 
@@ -55,23 +57,30 @@ public class Flink07_WaterMark_ForBounded_EventTimeWindow_Tumbling_AllowLateness
                         })
         );
 
-        waterSensorSingleOutputStreamOperator
+        WindowedStream<WaterSensor, String, TimeWindow> window = waterSensorSingleOutputStreamOperator
                 //5.将相同id的数据聚和到一块
-                .keyBy(t->t.getId())
+                .keyBy(t -> t.getId())
                 //6.开启一个基于事件时间的滚动窗口
                 .window(TumblingEventTimeWindows.of(Time.seconds(5)))
                 //允许迟到的数据
                 .allowedLateness(Time.seconds(2))
+                //将窗口关闭之后         迟到的数据输出到侧输出流
+                .sideOutputLateData(new OutputTag<WaterSensor>("out-put") {
+                });
+
+        SingleOutputStreamOperator<String> result = window
                 .process(new ProcessWindowFunction<WaterSensor, String, String, TimeWindow>() {
                     @Override
                     public void process(String key, Context context, Iterable<WaterSensor> elements, Collector<String> out) throws Exception {
                         String msg = "当前key: " + key
-                                + "窗口: [" + context.window().getStart() / 1000 + "," + context.window().getEnd()/1000 + ") 一共有 "
+                                + "窗口: [" + context.window().getStart() / 1000 + "," + context.window().getEnd() / 1000 + ") 一共有 "
                                 + elements.spliterator().estimateSize() + "条数据 ";
                         out.collect(msg);
                     }
-                })
-                .print();
+                });
+
+        result.print("主流");
+        result.getSideOutput(new OutputTag<WaterSensor>("out-put"){}).print("迟到的数据");
 
         env.execute();
     }

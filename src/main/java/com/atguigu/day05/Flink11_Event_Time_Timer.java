@@ -5,25 +5,16 @@ import org.apache.flink.api.common.eventtime.SerializableTimestampAssigner;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
+import org.apache.flink.streaming.api.datastream.KeyedStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
-import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
-import org.apache.flink.streaming.api.windowing.time.Time;
-import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.util.Collector;
 
 import java.time.Duration;
 
-/**
- * @author zhoums
- * @version 1.0
- * @date 2021/9/11 11:13
- */
-public class Flink07_WaterMark_ForBounded_EventTimeWindow_Tumbling_AllowLateness {
-
+public class Flink11_Event_Time_Timer {
     public static void main(String[] args) throws Exception {
-
         //1.获取流的执行环境
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
@@ -41,12 +32,10 @@ public class Flink07_WaterMark_ForBounded_EventTimeWindow_Tumbling_AllowLateness
             }
         });
 
-        //4.分配waterMark，并指定eventTime
+        //指定WaterMark
         SingleOutputStreamOperator<WaterSensor> waterSensorSingleOutputStreamOperator = waterSensorStream.assignTimestampsAndWatermarks(
                 WatermarkStrategy
-                        //分配waterMark类型   此处为乱序   (注：此处需要泛型方法)
                         .<WaterSensor>forBoundedOutOfOrderness(Duration.ofSeconds(2))
-                        //分配时间戳（事件时间）
                         .withTimestampAssigner(new SerializableTimestampAssigner<WaterSensor>() {
                             @Override
                             public long extractTimestamp(WaterSensor element, long recordTimestamp) {
@@ -55,23 +44,34 @@ public class Flink07_WaterMark_ForBounded_EventTimeWindow_Tumbling_AllowLateness
                         })
         );
 
-        waterSensorSingleOutputStreamOperator
-                //5.将相同id的数据聚和到一块
-                .keyBy(t->t.getId())
-                //6.开启一个基于事件时间的滚动窗口
-                .window(TumblingEventTimeWindows.of(Time.seconds(5)))
-                //允许迟到的数据
-                .allowedLateness(Time.seconds(2))
-                .process(new ProcessWindowFunction<WaterSensor, String, String, TimeWindow>() {
-                    @Override
-                    public void process(String key, Context context, Iterable<WaterSensor> elements, Collector<String> out) throws Exception {
-                        String msg = "当前key: " + key
-                                + "窗口: [" + context.window().getStart() / 1000 + "," + context.window().getEnd()/1000 + ") 一共有 "
-                                + elements.spliterator().estimateSize() + "条数据 ";
-                        out.collect(msg);
-                    }
-                })
-                .print();
+        //4.将相同id的数据聚和到一块
+        KeyedStream<WaterSensor, String> keyedStream = waterSensorSingleOutputStreamOperator.keyBy(t -> t.getId());
+
+        //TODO 5.在process方法中注册并使用基于事件时间的定时器
+        keyedStream.process(new KeyedProcessFunction<String, WaterSensor, String>() {
+            @Override
+            public void processElement(WaterSensor value, Context ctx, Collector<String> out) throws Exception {
+                //1.注册一个基于事件时间的定时器
+                ctx.timerService().registerEventTimeTimer(ctx.timestamp() + 5000);
+                System.out.println("注册定时器：" + ctx.timestamp() / 1000 + ctx.getCurrentKey());
+
+                //删除定时器
+//                ctx.timerService().deleteEventTimeTimer(ctx.timestamp()+5000);
+            }
+
+            /**
+             * 定时器触发之后调用此方法
+             *
+             * @param timestamp
+             * @param ctx
+             * @param out
+             * @throws Exception
+             */
+            @Override
+            public void onTimer(long timestamp, OnTimerContext ctx, Collector<String> out) throws Exception {
+                out.collect("定时器被触发要起床了" + ctx.timestamp() + ctx.getCurrentKey());
+            }
+        }).print();
 
         env.execute();
     }
